@@ -2075,20 +2075,26 @@
   }
 </style>
 </head>
-<body>
+<body class="signed-out">
 
-<!-- Public deployment: no sign-in. Hide sign-in elements immediately. -->
+<!-- Pre-hydration: if a user signed in previously, skip the sign-in flash on refresh -->
 <script>
-(function publicModeBoot() {
-  document.body.classList.remove('signed-out');
-  document.addEventListener('DOMContentLoaded', function () {
-    var page = document.getElementById('signinPage');
-    if (page) page.style.display = 'none';
-  }, { once: true });
+(function prehydrate() {
+  try {
+    var hasSignedInId = !!localStorage.getItem('orReview_signedIn_v1');
+    var hasUsers = !!localStorage.getItem('orReview_users_v1');
+    if (hasSignedInId && hasUsers) {
+      document.body.classList.remove('signed-out');
+      document.addEventListener('DOMContentLoaded', function () {
+        var page = document.getElementById('signinPage');
+        if (page) page.classList.add('hidden');
+      }, { once: true });
+    }
+  } catch (e) {}
 })();
 </script>
 
-<!-- Sign-In Page (unused in public mode — kept so old code paths don't 404) -->
+<!-- Sign-In Page -->
 <div id="signinPage">
   <div class="signin-card">
     <div class="signin-brand">
@@ -2141,7 +2147,7 @@
       </div>
     </div>
     <a class="topbar-link" data-action="users">Manage Users</a>
-    <a class="topbar-link" data-action="sign-out" style="display:none;">Sign out</a>
+    <a class="topbar-link" data-action="sign-out">Sign out</a>
   </div>
 </div>
 
@@ -2697,23 +2703,27 @@ async function initSupabase() {
   return false;
 }
 
-// Helper: timestamp tracking so we can do If-Modified-Since on every poll
-const cloudLastMod = {
-  orders: null,
-  checkins: null,
-  users: null,
-  assistance: null,
+// Helper: ms-cursor tracking so we can skip body on unchanged polls.
+// HTTP If-Modified-Since has only 1-second resolution which is too coarse
+// for 1s polling — we'd miss writes that land in the same second as the
+// previous poll. Using millisecond epoch via ?since=<ms> instead.
+const cloudLastMs = {
+  orders: 0,
+  checkins: 0,
+  users: 0,
+  assistance: 0,
 };
 
 async function _get(path, key) {
-  const headers = {};
-  if (key && cloudLastMod[key]) headers['If-Modified-Since'] = cloudLastMod[key];
-  const r = await fetch(path, { headers });
-  if (r.status === 304) return { unchanged: true };
+  const url = key && cloudLastMs[key]
+    ? path + (path.includes('?') ? '&' : '?') + 'since=' + cloudLastMs[key]
+    : path;
+  const r = await fetch(url, { cache: 'no-store' });
   if (!r.ok) throw new Error(path + ' → ' + r.status);
-  const lm = r.headers.get('Last-Modified');
-  if (lm && key) cloudLastMod[key] = lm;
-  return await r.json();
+  const json = await r.json();
+  if (key && json.latest_ms) cloudLastMs[key] = json.latest_ms;
+  if (json.unchanged) return { unchanged: true };
+  return json;
 }
 async function _post(path, body) {
   const r = await fetch(path, {
@@ -2757,7 +2767,6 @@ const Cloud = {
         photo_data: user.photoData || null,
       };
       await _post('/api/users', payload);
-      cloudLastMod.users = null;  // invalidate so next fetch re-pulls
       return true;
     } catch (e) {
       console.warn('[Cloud] upsertUser:', e.message);
@@ -2768,7 +2777,6 @@ const Cloud = {
     if (!supabaseReady) return false;
     try {
       await _del('/api/users?id=' + encodeURIComponent(id));
-      cloudLastMod.users = null;
       return true;
     } catch (e) {
       console.warn('[Cloud] deleteUser:', e.message);
@@ -2808,8 +2816,12 @@ const Cloud = {
         created_at: row.createdAt || Date.now(),
       };
       await _post('/api/orders', payload);
-      cloudLastMod.orders = null;
-      return true;
+      // We use the local row id as the cloud row id (one-to-one), so return
+      // it as `id` to match the old Supabase-shaped contract.
+      // CRITICAL: the cloud stores id as TEXT, so normalize to string here —
+      // otherwise downstream `r.cloudId === cloudRow.id` checks (string vs number)
+      // silently fail and cross-laptop sync breaks.
+      return { id: String(row.id) };
     } catch (e) {
       console.warn('[Cloud] upsertOrder:', e.message);
       return null;
@@ -2819,7 +2831,6 @@ const Cloud = {
     if (!supabaseReady) return false;
     try {
       await _del('/api/orders?id=' + encodeURIComponent(id));
-      cloudLastMod.orders = null;
       return true;
     } catch (e) {
       console.warn('[Cloud] deleteOrder:', e.message);
@@ -2830,7 +2841,6 @@ const Cloud = {
     if (!supabaseReady) return false;
     try {
       await _del('/api/orders?all=1');
-      cloudLastMod.orders = null;
       return true;
     } catch (e) {
       console.warn('[Cloud] deleteAllOrders:', e.message);
@@ -2862,7 +2872,6 @@ const Cloud = {
         pt_date: ptDateKey(ts),
       };
       const r = await _post('/api/checkins', payload);
-      cloudLastMod.checkins = null;
       return r;
     } catch (e) {
       console.warn('[Cloud] insertCheckin:', e.message);
@@ -2873,7 +2882,6 @@ const Cloud = {
     if (!supabaseReady || !id) return false;
     try {
       await _del('/api/checkins?id=' + encodeURIComponent(id));
-      cloudLastMod.checkins = null;
       return true;
     } catch (e) {
       console.warn('[Cloud] deleteCheckinById:', e.message);
@@ -2886,7 +2894,6 @@ const Cloud = {
     if (!supabaseReady) return null;
     try {
       const r = await _post('/api/assistance', { user_id: userId, user_name: userName, message: message || null });
-      cloudLastMod.assistance = null;
       return r;
     } catch (e) {
       console.warn('[Cloud] insertAssistanceOffer:', e.message);
@@ -2908,7 +2915,6 @@ const Cloud = {
     if (!supabaseReady || !id) return false;
     try {
       await _del('/api/assistance?id=' + encodeURIComponent(id));
-      cloudLastMod.assistance = null;
       return true;
     } catch (e) {
       console.warn('[Cloud] resolveAssistance:', e.message);
@@ -4792,15 +4798,10 @@ document.querySelectorAll('[data-action]').forEach(el => {
       const u = getSignedInUser();
       userState.signedInId = null;
       try { localStorage.removeItem(SIGNED_IN_STORAGE_KEY); } catch (e) {}
-      // Clean up Supabase session and realtime channels
-      if (supabaseReady) {
-        Cloud.signOut().catch(() => {});
-        if (typeof realtimeChannels !== 'undefined') {
-          realtimeChannels.forEach(ch => { try { supa.removeChannel(ch); } catch (e) {} });
-          realtimeChannels = [];
-        }
-        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-      }
+      // Stop all polling intervals
+      if (typeof pollTimer !== 'undefined' && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      if (typeof checkinPollTimer !== 'undefined' && checkinPollTimer) { clearInterval(checkinPollTimer); checkinPollTimer = null; }
+      if (typeof assistancePollTimer !== 'undefined' && assistancePollTimer) { clearInterval(assistancePollTimer); assistancePollTimer = null; }
       renderSigninSwitcher();
       renderUsers();
       if (typeof updateCheckInButton === 'function') updateCheckInButton();
@@ -5611,15 +5612,13 @@ document.getElementById('inviteUserBtn').addEventListener('click', () => {
 });
 
 // Initialize users
-// Public-mode boot. No sign-in page — anyone with the link uses the app.
-// Loads users + orders + check-ins + logo from Neon, then starts polling.
+// Sign-in mode boot. Loads users from Neon, then either:
+//   • restores a cached session (signed-in user id in localStorage), or
+//   • shows the sign-in page where user enters firstname + firstname123.
 (async function initApp() {
   const cloudOk = await initSupabase();
-  if (cloudOk) {
-    console.log('[Init] Neon backend online');
-  } else {
-    console.warn('[Init] Neon backend offline — running on localStorage only');
-  }
+  if (cloudOk) console.log('[Init] Neon backend online');
+  else console.warn('[Init] Neon backend offline — running on localStorage only');
 
   // 1. Load users
   let usersLoaded = false;
@@ -5631,16 +5630,14 @@ document.getElementById('inviteUserBtn').addEventListener('click', () => {
         nextUserId = Math.max(...userState.users.map(u => u.id), 0) + 1;
         usersLoaded = true;
       }
-    } catch (e) {
-      console.warn('[Init] cloud user fetch failed:', e.message);
-    }
+    } catch (e) { console.warn('[Init] cloud user fetch failed:', e.message); }
   }
   if (!usersLoaded) {
     const ok = await loadUsers();
     if (!ok) { seedUsers(); saveUsers(); }
   }
 
-  // Migration: photos + ensure Alan exists (idempotent — same as before)
+  // Migration: photos + ensure default users exist (idempotent)
   const photoMap = {
     'Alan Bailey': HARDCODED_PHOTOS.alan,
     'Austin Crawford': HARDCODED_PHOTOS.austin,
@@ -5669,7 +5666,7 @@ document.getElementById('inviteUserBtn').addEventListener('click', () => {
     if (supabaseReady) seedDefaultUsersToCloud().catch(() => {});
   }
 
-  // 2. Pull initial sheet/checkin/logo data
+  // 2. Pull initial data
   if (supabaseReady) {
     try { await syncOrdersFromCloud(); } catch (e) { console.warn('[Init] orders:', e); }
     try { await syncCheckinsFromCloud(); } catch (e) { console.warn('[Init] checkins:', e); }
@@ -5677,30 +5674,30 @@ document.getElementById('inviteUserBtn').addEventListener('click', () => {
     try { await syncAssistanceFromCloud(); } catch (e) { console.warn('[Init] assistance:', e); }
   }
 
-  // 3. Auto-pick a user from localStorage if there is one. Otherwise fall
-  //    back to the first super-admin so the Check-In button has a user
-  //    attached. The sign-in page is bypassed entirely on this deployment.
+  // 3. Restore previous session if present
   const cachedId = parseInt(localStorage.getItem(SIGNED_IN_STORAGE_KEY) || '0');
-  let me = userState.users.find(u => u.id === cachedId);
-  if (!me) {
-    me = userState.users.find(u => u.permission === 'super') || userState.users[0] || null;
-  }
-  if (me) {
-    userState.signedInId = me.id;
-    try { localStorage.setItem(SIGNED_IN_STORAGE_KEY, String(me.id)); } catch (e) {}
+  const cachedUser = cachedId ? userState.users.find(u => u.id === cachedId) : null;
+  if (cachedUser) {
+    userState.signedInId = cachedUser.id;
+    revealApp();
+    if (supabaseReady) subscribeToRealtimeUpdates();
+    renderSigninSwitcher();
+    renderUsers();
+    renderSheet();
+    updateStats();
+    if (typeof updateCheckInButton === 'function') updateCheckInButton();
+    applyRoleVisibility();
+    if (supabaseReady) cleanupDuplicateCheckinsInCloud().catch(() => {});
+    console.log('[Init] Resumed session for', cachedUser.name);
+    return;
   }
 
-  // 4. Reveal the app, kick off polling, render everything
-  revealApp();
-  if (supabaseReady) subscribeToRealtimeUpdates();
+  // 4. No session — show sign-in
+  showSignInPage();
   renderSigninSwitcher();
   renderUsers();
-  renderSheet();
-  updateStats();
   if (typeof updateCheckInButton === 'function') updateCheckInButton();
   applyRoleVisibility();
-  // Clean up any pre-existing duplicate check-ins in the DB
-  if (supabaseReady) cleanupDuplicateCheckinsInCloud().catch(() => {});
 })();
 
 /* ========== AUTHENTICATION ========== */
@@ -5850,56 +5847,18 @@ async function handleSignInSubmit() {
   submitBtn.textContent = 'Signing in…';
 
   try {
-    // Map firstname → real work email
-    const trimmed = username.trim().toLowerCase();
-    let email;
-    if (trimmed.includes('@')) {
-      email = trimmed; // user typed full email directly
-    } else if (FIRSTNAME_TO_EMAIL[trimmed]) {
-      email = FIRSTNAME_TO_EMAIL[trimmed]; // mapped to real email
-    } else {
-      email = `${trimmed}@arenaclub.com`; // fallback for new users
+    // Make sure user records are loaded from cloud first
+    if (supabaseReady) {
+      try { await syncUsersFromCloud(); } catch (e) { /* non-fatal */ }
+      if (userState.users.length < 9) {
+        try { await seedDefaultUsersToCloud(); } catch (e) { /* non-fatal */ }
+      }
     }
 
-    const result = await Cloud.signIn(email, password);
-    if (!result.ok) {
-      errorEl.textContent = result.error || 'Invalid username or password.';
-      errorEl.classList.add('active');
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Sign In';
-      return;
-    }
-
-    // Auth succeeded — sync existing users from cloud (might be empty on first run)
-    await syncUsersFromCloud();
-
-    // ALWAYS run the seeding pass — it's idempotent (skips users already in cloud)
-    // This guarantees that if the typed-in user matches one of our 9 defaults,
-    // their record will exist in userState.users by the time we look up.
-    console.log('[SignIn] users in cloud:', userState.users.length);
-    if (userState.users.length < 9) {
-      console.log('[SignIn] Seeding default users to cloud...');
-      await seedDefaultUsersToCloud();
-      console.log('[SignIn] After seed, users in cloud:', userState.users.length);
-    }
-
-    // Find the matching app user record by email
-    let appUser = userState.users.find(u => (u.email || '').toLowerCase() === email.toLowerCase());
-
-    // Last-resort fallback: match by first name (in case email format differs)
+    // Local authentication — matches by first name, password = "<firstname>123"
+    const appUser = authenticate(username, password);
     if (!appUser) {
-      appUser = userState.users.find(u => u.name.split(' ')[0].toLowerCase() === trimmed);
-    }
-
-    // Link auth_user_id if missing
-    if (appUser && !appUser.auth_user_id) {
-      appUser.auth_user_id = result.authUser.id;
-      Cloud.upsertUser(appUser).catch(() => {});
-    }
-
-    if (!appUser) {
-      console.error('[SignIn] No matching user found. Email:', email, 'Users:', userState.users.map(u => u.email));
-      errorEl.textContent = `No user record found for ${email}. Check the console.`;
+      errorEl.textContent = 'Invalid username or password.';
       errorEl.classList.add('active');
       submitBtn.disabled = false;
       submitBtn.textContent = 'Sign In';
@@ -5911,13 +5870,13 @@ async function handleSignInSubmit() {
     try { localStorage.setItem(SIGNED_IN_STORAGE_KEY, String(appUser.id)); } catch (e) {}
 
     // Load other data from cloud
-    await syncOrdersFromCloud();
-    await syncCheckinsFromCloud();
-    await syncLogoFromCloud();
-    await syncAssistanceFromCloud();
-
-    // Subscribe to realtime updates
-    subscribeToRealtimeUpdates();
+    if (supabaseReady) {
+      await syncOrdersFromCloud();
+      await syncCheckinsFromCloud();
+      await syncLogoFromCloud();
+      await syncAssistanceFromCloud();
+      subscribeToRealtimeUpdates();
+    }
 
     revealApp();
     renderSigninSwitcher();
@@ -5925,8 +5884,9 @@ async function handleSignInSubmit() {
     renderSheet();
     updateStats();
     if (typeof updateCheckInButton === 'function') updateCheckInButton();
+    applyRoleVisibility();
     // Fire-and-forget: purge any existing duplicate check-ins from the cloud
-    cleanupDuplicateCheckinsInCloud().catch(() => {});
+    if (supabaseReady) cleanupDuplicateCheckinsInCloud().catch(() => {});
     showToast(`Welcome back, ${appUser.name.split(' ')[0]}`);
   } catch (err) {
     console.error('[SignIn] error:', err);
@@ -5956,7 +5916,7 @@ function mapCloudUserToLocal(u) {
 function mapCloudOrderToLocal(o) {
   return {
     id: nextId++,    // Always assign a fresh local ID
-    cloudId: o.id,   // Track the cloud-assigned ID separately
+    cloudId: String(o.id),   // Track the cloud-assigned ID (always string — matches what upsertOrder returns)
     orderNum: o.order_num || '',
     released: !!o.released,
     bin: o.bin || '',
@@ -5968,7 +5928,7 @@ function mapCloudOrderToLocal(o) {
     notes: o.notes || '',
     startTime: o.start_time || '',
     endTime: o.end_time || '',
-    breakTime: o.break_minutes != null ? String(o.break_minutes) : '0',
+    breakTime: o.break_time != null ? String(o.break_time) : '0',
     createdAt: o.created_at ? new Date(o.created_at).getTime() : Date.now(),
   };
 }
@@ -6153,12 +6113,14 @@ function startBackgroundPolling() {
       if (!cloud) return;  // 304 / unchanged
 
       let changed = false;
-      const cloudIds = new Set(cloud.map(r => r.id));
+      // Cloud stores ids as TEXT; cast everything to string so matching works.
+      const cloudIds = new Set(cloud.map(r => String(r.id)));
 
       // Step 1: apply cloud data to local state
       cloud.forEach(cloudRow => {
+        const cloudIdStr = String(cloudRow.id);
         // Find the local row this cloud row corresponds to (by cloudId)
-        const existing = state.rows.find(r => r.cloudId === cloudRow.id);
+        const existing = state.rows.find(r => String(r.cloudId) === cloudIdStr);
 
         // Skip rows we're currently editing (using the LOCAL id, since dirtyRowIds
         // tracks local ids)
@@ -6172,7 +6134,7 @@ function startBackgroundPolling() {
           changed = true;
         } else {
           // Existing row — diff fields (preserve local id for DOM stability)
-          existing.cloudId = cloudRow.id;
+          existing.cloudId = cloudIdStr;
           // Never overwrite the field the user is currently typing into
           const activeEl = document.activeElement;
           const activeRowId = activeEl?.dataset?.id ? parseInt(activeEl.dataset.id) : null;
@@ -6197,7 +6159,7 @@ function startBackgroundPolling() {
         // Keep rows that were never pushed to cloud (no cloudId)
         if (!r.cloudId) return true;
         // Keep rows whose cloudId still exists in cloud
-        return cloudIds.has(r.cloudId);
+        return cloudIds.has(String(r.cloudId));
       });
       if (state.rows.length !== before) changed = true;
 

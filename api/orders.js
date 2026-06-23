@@ -16,16 +16,21 @@ export default async function handler(req, res) {
     await ensureSchema();
 
     if (req.method === 'GET') {
-      // Find the most recent update — used for change detection on the client
-      const [{ max_ts } = { max_ts: null }] = await sql`
-        SELECT MAX(updated_at)::text AS max_ts FROM or_orders
+      // Find the most recent update — used for change detection on the client.
+      // We use millisecond-precision via epoch rather than Last-Modified header,
+      // because HTTP dates have 1-second resolution which is too coarse for 1s
+      // polling — writes that land within the same second as the previous poll
+      // get missed.
+      const [{ max_ms } = { max_ms: null }] = await sql`
+        SELECT (EXTRACT(EPOCH FROM MAX(updated_at)) * 1000)::bigint AS max_ms FROM or_orders
       `;
+      const maxMs = max_ms != null ? Number(max_ms) : 0;
 
-      // If client sent If-Modified-Since and nothing has changed since then,
-      // return 304 to skip the body payload. This cuts polling cost dramatically.
-      const ims = req.headers['if-modified-since'];
-      if (ims && max_ts && new Date(ims).getTime() >= new Date(max_ts).getTime()) {
-        res.status(304).end();
+      // Client can pass ?since=<ms> to skip the response body if nothing changed.
+      const since = req.query.since ? Number(req.query.since) : null;
+      if (since != null && maxMs && maxMs <= since) {
+        res.setHeader('Cache-Control', 'no-cache');
+        res.status(200).json({ rows: null, latest_ms: maxMs, unchanged: true });
         return;
       }
 
@@ -33,14 +38,13 @@ export default async function handler(req, res) {
         SELECT id, order_num, released, bin, bin_color,
                reviewer_user_id, reviewer_name, total_cards, reviewed_cards,
                notes, start_time, end_time, break_time, created_at,
-               updated_at::text AS updated_at
+               (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS updated_ms
         FROM or_orders
         ORDER BY created_at DESC NULLS LAST
         LIMIT 2000
       `;
-      if (max_ts) res.setHeader('Last-Modified', new Date(max_ts).toUTCString());
       res.setHeader('Cache-Control', 'no-cache');
-      res.status(200).json({ rows, latest_updated_at: max_ts });
+      res.status(200).json({ rows, latest_ms: maxMs });
       return;
     }
 

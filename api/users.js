@@ -14,12 +14,14 @@ export default async function handler(req, res) {
     await ensureSchema();
 
     if (req.method === 'GET') {
-      const [{ max_ts } = { max_ts: null }] = await sql`
-        SELECT MAX(updated_at)::text AS max_ts FROM or_users
+      const [{ max_ms } = { max_ms: null }] = await sql`
+        SELECT (EXTRACT(EPOCH FROM MAX(updated_at)) * 1000)::bigint AS max_ms FROM or_users
       `;
-      const ims = req.headers['if-modified-since'];
-      if (ims && max_ts && new Date(ims).getTime() >= new Date(max_ts).getTime()) {
-        res.status(304).end();
+      const maxMs = max_ms != null ? Number(max_ms) : 0;
+      const since = req.query.since ? Number(req.query.since) : null;
+      if (since != null && maxMs && maxMs <= since) {
+        res.setHeader('Cache-Control', 'no-cache');
+        res.status(200).json({ rows: null, latest_ms: maxMs, unchanged: true });
         return;
       }
       const rows = await sql`
@@ -27,9 +29,8 @@ export default async function handler(req, res) {
         FROM or_users
         ORDER BY id
       `;
-      if (max_ts) res.setHeader('Last-Modified', new Date(max_ts).toUTCString());
       res.setHeader('Cache-Control', 'no-cache');
-      res.status(200).json({ rows });
+      res.status(200).json({ rows, latest_ms: maxMs });
       return;
     }
 
