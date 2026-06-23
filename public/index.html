@@ -2866,8 +2866,16 @@ const Cloud = {
   async upsertOrder(row) {
     if (!supabaseReady) return null;
     try {
+      // Mint a globally unique cloud ID on first write — never reuse the local
+      // numeric row.id. Local ids start at 1 on every laptop independently, so
+      // both Austin's row 5 and Alan's row 5 would otherwise collide on the
+      // cloud and overwrite each other. cloudId is a string like
+      // "1719158400000-x7k2pq8" that's unique to this row across all laptops.
+      if (!row.cloudId) {
+        row.cloudId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      }
       const payload = {
-        id: row.id,
+        id: row.cloudId,
         order_num: row.orderNum || null,
         released: !!row.released,
         bin: row.bin || null,
@@ -2883,12 +2891,7 @@ const Cloud = {
         created_at: row.createdAt || Date.now(),
       };
       await _post('/api/orders', payload);
-      // We use the local row id as the cloud row id (one-to-one), so return
-      // it as `id` to match the old Supabase-shaped contract.
-      // CRITICAL: the cloud stores id as TEXT, so normalize to string here —
-      // otherwise downstream `r.cloudId === cloudRow.id` checks (string vs number)
-      // silently fail and cross-laptop sync breaks.
-      return { id: String(row.id) };
+      return { id: row.cloudId };
     } catch (e) {
       console.warn('[Cloud] upsertOrder:', e.message);
       return null;
@@ -3085,8 +3088,16 @@ const state = {
 
 let nextId = 1;
 
-const STORAGE_KEY = 'reviewOregon_v1';
+const STORAGE_KEY = 'reviewOregon_v2';  // bumped from v1 — v1 had numeric cloudIds that collided across laptops
 const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+
+// One-time migration: nuke v1 keys so old collision-prone data doesn't linger.
+try {
+  if (typeof localStorage !== 'undefined' && localStorage.getItem('reviewOregon_v1')) {
+    localStorage.removeItem('reviewOregon_v1');
+    console.log('[migration] cleared v1 localStorage (numeric cloudIds were collision-prone)');
+  }
+} catch (e) {}
 
 function newRow(data = {}) {
   return {
