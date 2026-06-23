@@ -2946,11 +2946,36 @@ const Cloud = {
     }
   },
 
-  // ===== AUTH (NO-OP — no sign-in needed on the public site) =====
-  // The site is public per Alan's request. These methods return shapes
-  // that satisfy the old call sites but do nothing real.
+  // ===== COMPATIBILITY SHIMS =====
+  // Old Supabase code called these — keep them so call sites don't blow up.
+  // dismissAssistanceOffer → my resolveAssistance (same behavior: mark resolved)
+  async dismissAssistanceOffer(id) {
+    return this.resolveAssistance(id);
+  },
+  // uploadDataUrl was Supabase Storage. We just keep data URLs inline in the
+  // tables (photos in or_users.photo_data, logo in or_logo.data) — so the
+  // "upload" is a no-op that just returns the same data URL back.
+  async uploadDataUrl(bucket, filename, dataUrl) {
+    return dataUrl;
+  },
+  // getSetting/setSetting used by old logo flow — redirect to my logo API
+  async getSetting(key) {
+    if (key === 'logo') {
+      const data = await this.fetchLogo();
+      return data ? { url: data } : null;
+    }
+    return null;
+  },
+  async setSetting(key, value) {
+    if (key === 'logo' && value && value.url) {
+      return this.setLogo(value.url);
+    }
+    return false;
+  },
+
+  // ===== AUTH (NO-OP — handled client-side now) =====
   async signIn(email, password) {
-    return { ok: false, error: 'Sign-in disabled on this deployment' };
+    return { ok: false, error: 'Sign-in disabled — use local authenticate()' };
   },
   async signOut() {
     return true;
@@ -3089,11 +3114,9 @@ document.getElementById('brandLogoInput').addEventListener('change', (e) => {
     if (supabaseReady) {
       const me = getSignedInUser();
       if (me && me.permission === 'super') {
-        const url = await Cloud.uploadDataUrl('logos', `brand-logo-${Date.now()}.png`, dataUrl);
-        if (url) {
-          await Cloud.setSetting('logo', { url });
-          showToast('Logo synced to all team laptops', 'success');
-        }
+        // Send the data URL directly — /api/logo stores the base64 inline.
+        const ok = await Cloud.setLogo(dataUrl);
+        if (ok) showToast('Logo synced to all team laptops', 'success');
       } else {
         showToast('Local only — only super admins can update the team-wide logo', 'info');
       }
@@ -6021,10 +6044,8 @@ async function cleanupDuplicateCheckinsInCloud() {
 }
 
 async function syncLogoFromCloud() {
-  const v = await Cloud.getSetting('logo');
-  if (v && v.url) {
-    applyLogo(v.url);
-  }
+  const dataUrl = await Cloud.fetchLogo();
+  if (dataUrl) applyLogo(dataUrl);
 }
 
 async function syncAssistanceFromCloud() {
@@ -6044,44 +6065,32 @@ async function seedDefaultUsersToCloud() {
     const existing = userState.users.find(u => (u.email || '').toLowerCase() === targetEmail);
     if (existing) continue;
 
-    let photoUrl = null;
-    if (def.photoData && def.photoData.startsWith('data:')) {
-      const slug = def.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      try {
-        photoUrl = await Cloud.uploadDataUrl('avatars', `${slug}.jpg`, def.photoData);
-      } catch (e) { console.warn('[Seed] photo upload failed for', def.name, e); }
-    }
+    // Photo: just keep the data URL inline (no Supabase Storage anymore)
+    const photoData = def.photoData || null;
 
-    const userPayload = {
-      ...def,
+    // Build the local user record with a fresh ID
+    const newUser = {
+      id: nextUserId++,
+      name: def.name,
       email: emailFromName(def.name),
-      photo_url: photoUrl,
+      title: def.title,
+      permission: def.permission,
+      avatarColor: def.avatarColor,
+      photoData: photoData,
+      status: 'offline',
     };
 
-    let saved = null;
+    // Add to local state first
+    userState.users.push(newUser);
+
+    // Then push to cloud (idempotent — ON CONFLICT DO UPDATE)
     try {
-      saved = await Cloud.upsertUser(userPayload);
+      await Cloud.upsertUser(newUser);
     } catch (e) {
       console.warn('[Seed] cloud upsert failed for', def.name, e);
     }
-
-    if (saved) {
-      userState.users.push(mapCloudUserToLocal(saved));
-    } else {
-      // Cloud upsert failed — add to local state with synthetic ID so login still works
-      console.warn('[Seed] adding', def.name, 'to local state only (cloud upsert failed)');
-      userState.users.push({
-        id: nextUserId++,
-        name: def.name,
-        email: emailFromName(def.name),
-        title: def.title,
-        permission: def.permission,
-        avatarColor: def.avatarColor,
-        photoData: photoUrl || def.photoData,
-        status: 'offline',
-      });
-    }
   }
+  saveUsers();
 }
 
 /* ========== REALTIME SUBSCRIPTIONS ========== */
