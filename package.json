@@ -1,0 +1,17 @@
+{
+  "name": "or-review",
+  "version": "1.0.0",
+  "description": "Arena Club OR Review — Vercel + Neon Postgres",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.0"
+  },
+  "engines": {
+    "node": ">=18.x"
+  }
+}
