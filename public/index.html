@@ -5763,7 +5763,8 @@ function setPasswordFor(userId, newPassword) {
 
 function authenticate(username, password) {
   const trimmedUser = (username || '').trim().toLowerCase();
-  if (!trimmedUser || !password) return null;
+  const trimmedPwd = (password || '').trim();
+  if (!trimmedUser || !trimmedPwd) return { ok: false, reason: 'empty' };
 
   console.log('[Auth] attempt:', JSON.stringify({
     username: trimmedUser,
@@ -5790,13 +5791,13 @@ function authenticate(username, password) {
   }
 
   if (!candidate) {
-    console.log('[Auth] no user match');
-    return null;
+    console.log('[Auth] no user match for', trimmedUser);
+    return { ok: false, reason: 'no_user', user: trimmedUser };
   }
   const expected = getPasswordFor(candidate);
-  console.log('[Auth] expected pwd:', expected, 'got:', password);
-  if (password === expected) return candidate;
-  return null;
+  console.log('[Auth] expected pwd:', expected, 'got:', trimmedPwd);
+  if (trimmedPwd === expected) return { ok: true, user: candidate };
+  return { ok: false, reason: 'wrong_password', user: candidate.name };
 }
 
 function showSignInPage() {
@@ -5879,14 +5880,22 @@ async function handleSignInSubmit() {
     }
 
     // Local authentication — matches by first name, password = "<firstname>123"
-    const appUser = authenticate(username, password);
-    if (!appUser) {
-      errorEl.textContent = 'Invalid username or password.';
+    const result = authenticate(username, password);
+    if (!result || !result.ok) {
+      // Specific error messages so it's obvious what went wrong
+      let msg = 'Invalid username or password.';
+      if (result?.reason === 'no_user') {
+        msg = `No user named "${result.user}" found. Check spelling.`;
+      } else if (result?.reason === 'wrong_password') {
+        msg = `Wrong password for ${result.user}. Try "${(username || '').trim().toLowerCase()}123" (no spaces, lowercase).`;
+      }
+      errorEl.textContent = msg;
       errorEl.classList.add('active');
       submitBtn.disabled = false;
       submitBtn.textContent = 'Sign In';
       return;
     }
+    const appUser = result.user;
 
     errorEl.classList.remove('active');
     userState.signedInId = appUser.id;
