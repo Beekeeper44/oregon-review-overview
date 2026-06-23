@@ -590,6 +590,35 @@
   body.role-basic #clearAllBtn,
   body.role-basic #clearSheetBtn { display: none; }
 
+  /* Live cloud-sync indicator in the top bar */
+  .sync-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background 0.15s, border 0.15s;
+    user-select: none;
+  }
+  .sync-pill:hover { background: var(--bg); }
+  .sync-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #ccc;
+  }
+  .sync-pill.connecting .sync-dot { background: #d89030; animation: syncBlink 1s infinite; }
+  .sync-pill.connecting { border-color: #f0d28a; color: #8a6610; }
+  .sync-pill.live .sync-dot { background: #2d7d4f; box-shadow: 0 0 0 2px rgba(45,125,79,0.18); }
+  .sync-pill.live { border-color: #b7d8c4; color: #1f5b3a; }
+  .sync-pill.error .sync-dot { background: #c44545; }
+  .sync-pill.error { border-color: #f0baba; color: #8a2727; }
+  @keyframes syncBlink { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
   /* Hide password resets tab for non-super-admins */
   body:not(.role-super) [data-tab="passwords"] { display: none; }
 
@@ -2148,6 +2177,10 @@
     </div>
     <a class="topbar-link" data-action="users">Manage Users</a>
     <a class="topbar-link" data-action="sign-out">Sign out</a>
+    <div class="sync-pill" id="syncPill" title="Cloud sync status — click to force refresh">
+      <span class="sync-dot" id="syncDot"></span>
+      <span class="sync-text" id="syncText">Connecting…</span>
+    </div>
   </div>
 </div>
 
@@ -2718,26 +2751,60 @@ async function _get(path, key) {
   const url = key && cloudLastMs[key]
     ? path + (path.includes('?') ? '&' : '?') + 'since=' + cloudLastMs[key]
     : path;
-  const r = await fetch(url, { cache: 'no-store' });
-  if (!r.ok) throw new Error(path + ' → ' + r.status);
-  const json = await r.json();
-  if (key && json.latest_ms) cloudLastMs[key] = json.latest_ms;
-  if (json.unchanged) return { unchanged: true };
-  return json;
+  try {
+    const r = await fetch(url, { cache: 'no-store' });
+    if (!r.ok) throw new Error(path + ' → ' + r.status);
+    const json = await r.json();
+    if (key && json.latest_ms) cloudLastMs[key] = json.latest_ms;
+    syncStats.reads++;
+    syncStats.lastReadAt = Date.now();
+    if (json.unchanged) return { unchanged: true };
+    return json;
+  } catch (e) {
+    syncStats.errors++;
+    syncStats.lastError = `GET ${path}: ${e.message}`;
+    syncStats.lastErrorAt = Date.now();
+    updateRealtimeIndicator();
+    throw e;
+  }
 }
 async function _post(path, body) {
-  const r = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(path + ' → ' + r.status);
-  return await r.json();
+  try {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      let detail = '';
+      try { detail = ' — ' + (await r.text()).slice(0, 200); } catch (e) {}
+      throw new Error(path + ' → ' + r.status + detail);
+    }
+    syncStats.writes++;
+    syncStats.lastWriteAt = Date.now();
+    return await r.json();
+  } catch (e) {
+    syncStats.errors++;
+    syncStats.lastError = `POST ${path}: ${e.message}`;
+    syncStats.lastErrorAt = Date.now();
+    updateRealtimeIndicator();
+    throw e;
+  }
 }
 async function _del(path) {
-  const r = await fetch(path, { method: 'DELETE' });
-  if (!r.ok) throw new Error(path + ' → ' + r.status);
-  return await r.json();
+  try {
+    const r = await fetch(path, { method: 'DELETE' });
+    if (!r.ok) throw new Error(path + ' → ' + r.status);
+    syncStats.writes++;
+    syncStats.lastWriteAt = Date.now();
+    return await r.json();
+  } catch (e) {
+    syncStats.errors++;
+    syncStats.lastError = `DELETE ${path}: ${e.message}`;
+    syncStats.lastErrorAt = Date.now();
+    updateRealtimeIndicator();
+    throw e;
+  }
 }
 
 const Cloud = {
@@ -6246,10 +6313,85 @@ function startAssistancePolling() {
   }, 1000);
 }
 
+// Sync indicator state — visible counters so we can see at a glance
+// whether the cloud is actually working from each laptop.
+const syncStats = {
+  reads: 0,        // successful GET polls
+  writes: 0,       // successful POSTs
+  lastWriteAt: 0,  // ms timestamp of last successful write
+  lastReadAt: 0,   // ms timestamp of last successful GET (incl. unchanged)
+  errors: 0,       // total errors since boot
+  lastError: null, // text of last error
+};
+
 function updateRealtimeIndicator() {
-  // Optional: show a small dot in the topbar indicating sync status.
-  // For now just log.
+  const pill = document.getElementById('syncPill');
+  const dot = document.getElementById('syncDot');
+  const text = document.getElementById('syncText');
+  if (!pill || !text) return;
+
+  pill.classList.remove('connecting', 'live', 'error');
+
+  if (!supabaseReady) {
+    pill.classList.add('connecting');
+    text.textContent = 'Offline';
+    return;
+  }
+
+  const now = Date.now();
+  const sinceRead = syncStats.lastReadAt ? Math.round((now - syncStats.lastReadAt) / 1000) : null;
+
+  if (syncStats.lastError && (now - (syncStats.lastErrorAt || 0)) < 10000) {
+    pill.classList.add('error');
+    text.textContent = 'Sync error';
+    pill.title = syncStats.lastError + ` — ${syncStats.errors} errors total. Click to force refresh.`;
+    return;
+  }
+
+  if (sinceRead !== null && sinceRead < 5) {
+    pill.classList.add('live');
+    text.textContent = `Live · ${syncStats.reads}↓ ${syncStats.writes}↑`;
+    pill.title = `Cloud sync working. ${syncStats.reads} polls, ${syncStats.writes} writes. Last read ${sinceRead}s ago. Click to force refresh.`;
+  } else {
+    pill.classList.add('connecting');
+    text.textContent = sinceRead === null ? 'Connecting…' : `Stale (${sinceRead}s)`;
+    pill.title = 'Cloud connection slow or stalled. Click to force refresh.';
+  }
 }
+
+// Update the pill once a second so the "Stale (Ns)" counter ticks
+setInterval(updateRealtimeIndicator, 1000);
+
+// Click the pill to force a full refresh from cloud
+document.addEventListener('DOMContentLoaded', () => {
+  const pill = document.getElementById('syncPill');
+  if (!pill) return;
+  pill.addEventListener('click', async () => {
+    if (!supabaseReady) {
+      const ok = await initSupabase();
+      if (ok) subscribeToRealtimeUpdates();
+      updateRealtimeIndicator();
+      return;
+    }
+    // Force-clear the ms cursor so the next poll re-pulls everything
+    cloudLastMs.orders = 0;
+    cloudLastMs.checkins = 0;
+    cloudLastMs.users = 0;
+    cloudLastMs.assistance = 0;
+    try {
+      await syncUsersFromCloud();
+      await syncOrdersFromCloud();
+      await syncCheckinsFromCloud();
+      await syncLogoFromCloud();
+      renderSheet();
+      updateStats();
+      if (document.getElementById('page-calendar')?.classList.contains('active')) renderCalendar();
+      showToast('Forced refresh from cloud', 'info');
+    } catch (e) {
+      showToast('Refresh failed: ' + e.message, 'error');
+    }
+  });
+});
 
 function handleRemoteOrderChange(payload) {
   const { eventType, new: newRec, old: oldRec } = payload;
