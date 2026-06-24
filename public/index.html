@@ -590,7 +590,7 @@
   body.role-basic #clearAllBtn,
   body.role-basic #clearSheetBtn { display: none; }
 
-  /* Live cloud-sync indicator in the top bar */
+  /* Live cloud-sync indicator in the top bar — passive, not clickable */
   .sync-pill {
     display: inline-flex;
     align-items: center;
@@ -602,11 +602,8 @@
     font-size: 11px;
     font-weight: 600;
     color: var(--text-muted);
-    cursor: pointer;
-    transition: background 0.15s, border 0.15s;
     user-select: none;
   }
-  .sync-pill:hover { background: var(--bg); }
   .sync-dot {
     width: 7px; height: 7px; border-radius: 50%;
     background: #ccc;
@@ -2106,13 +2103,12 @@
 </head>
 <body class="signed-out">
 
-<!-- Pre-hydration: if a user signed in previously, skip the sign-in flash on refresh -->
+<!-- Pre-hydration: if a user was signed in previously, skip the sign-in flash on refresh.
+     We ONLY check for the session id — users load from cloud right after this. -->
 <script>
 (function prehydrate() {
   try {
-    var hasSignedInId = !!localStorage.getItem('orReview_signedIn_v1');
-    var hasUsers = !!localStorage.getItem('orReview_users_v1');
-    if (hasSignedInId && hasUsers) {
+    if (localStorage.getItem('orReview_signedIn_v1')) {
       document.body.classList.remove('signed-out');
       document.addEventListener('DOMContentLoaded', function () {
         var page = document.getElementById('signinPage');
@@ -2177,7 +2173,7 @@
     </div>
     <a class="topbar-link" data-action="users">Manage Users</a>
     <a class="topbar-link" data-action="sign-out">Sign out</a>
-    <div class="sync-pill" id="syncPill" title="Cloud sync status — click to force refresh">
+    <div class="sync-pill" id="syncPill" title="Cloud sync status">
       <span class="sync-dot" id="syncDot"></span>
       <span class="sync-text" id="syncText">Connecting…</span>
     </div>
@@ -4047,8 +4043,10 @@ function computeTimePerCard(row) {
 
 function dateFilterMatches(row, filter) {
   if (filter === 'all') return true;
-  const ts = row.createdAt || 0;
-  if (!ts) return filter === 'all';
+  let ts = Number(row.createdAt) || 0;
+  // If createdAt was NaN or 0, fall back to "now" so the row at least shows
+  // under Today — better than silently hiding it forever.
+  if (!ts || !Number.isFinite(ts)) ts = Date.now();
   const now = new Date();
   const created = new Date(ts);
 
@@ -4898,7 +4896,10 @@ document.querySelectorAll('[data-action]').forEach(el => {
     if (a === 'sign-out') {
       const u = getSignedInUser();
       userState.signedInId = null;
-      try { localStorage.removeItem(SIGNED_IN_STORAGE_KEY); } catch (e) {}
+      try {
+        localStorage.removeItem(SIGNED_IN_STORAGE_KEY);
+        localStorage.removeItem('orReview_signedInName_v1');
+      } catch (e) {}
       // Stop all polling intervals
       if (typeof pollTimer !== 'undefined' && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
       if (typeof checkinPollTimer !== 'undefined' && checkinPollTimer) { clearInterval(checkinPollTimer); checkinPollTimer = null; }
@@ -5775,11 +5776,23 @@ document.getElementById('inviteUserBtn').addEventListener('click', () => {
     try { await syncAssistanceFromCloud(); } catch (e) { console.warn('[Init] assistance:', e); }
   }
 
-  // 3. Restore previous session if present
+  // 3. Restore previous session if present. We try a sequence of fallbacks
+  //    because user IDs can drift across DB instances but names are stable.
   const cachedId = parseInt(localStorage.getItem(SIGNED_IN_STORAGE_KEY) || '0');
-  const cachedUser = cachedId ? userState.users.find(u => u.id === cachedId) : null;
+  const cachedName = localStorage.getItem('orReview_signedInName_v1') || '';
+  let cachedUser = null;
+  if (cachedId) cachedUser = userState.users.find(u => u.id === cachedId);
+  if (!cachedUser && cachedName) {
+    cachedUser = userState.users.find(u => u.name === cachedName)
+              || userState.users.find(u => u.name.split(' ')[0].toLowerCase() === cachedName.split(' ')[0].toLowerCase());
+  }
   if (cachedUser) {
     userState.signedInId = cachedUser.id;
+    // Re-cache the (possibly new) id and name so next refresh has both
+    try {
+      localStorage.setItem(SIGNED_IN_STORAGE_KEY, String(cachedUser.id));
+      localStorage.setItem('orReview_signedInName_v1', cachedUser.name);
+    } catch (e) {}
     revealApp();
     if (supabaseReady) subscribeToRealtimeUpdates();
     renderSigninSwitcher();
@@ -5977,7 +5990,10 @@ async function handleSignInSubmit() {
 
     errorEl.classList.remove('active');
     userState.signedInId = appUser.id;
-    try { localStorage.setItem(SIGNED_IN_STORAGE_KEY, String(appUser.id)); } catch (e) {}
+    try {
+      localStorage.setItem(SIGNED_IN_STORAGE_KEY, String(appUser.id));
+      localStorage.setItem('orReview_signedInName_v1', appUser.name);
+    } catch (e) {}
 
     // Load other data from cloud
     if (supabaseReady) {
@@ -6024,9 +6040,17 @@ function mapCloudUserToLocal(u) {
 }
 
 function mapCloudOrderToLocal(o) {
+  // created_at is a Postgres BIGINT (epoch ms) which the Neon driver returns
+  // as a *string* of digits. new Date("1719158400000") is "Invalid Date" → NaN
+  // → date-filtered out of the sheet on every load. We coerce to Number first.
+  let createdAtMs = Date.now();
+  if (o.created_at != null) {
+    const n = Number(o.created_at);
+    if (Number.isFinite(n) && n > 0) createdAtMs = n;
+  }
   return {
     id: nextId++,    // Always assign a fresh local ID
-    cloudId: String(o.id),   // Track the cloud-assigned ID (always string — matches what upsertOrder returns)
+    cloudId: String(o.id),   // Track the cloud-assigned ID (always string)
     orderNum: o.order_num || '',
     released: !!o.released,
     bin: o.bin || '',
@@ -6039,7 +6063,7 @@ function mapCloudOrderToLocal(o) {
     startTime: o.start_time || '',
     endTime: o.end_time || '',
     breakTime: o.break_time != null ? String(o.break_time) : '0',
-    createdAt: o.created_at ? new Date(o.created_at).getTime() : Date.now(),
+    createdAt: createdAtMs,
   };
 }
 
@@ -6355,54 +6379,23 @@ function updateRealtimeIndicator() {
   if (syncStats.lastError && (now - (syncStats.lastErrorAt || 0)) < 10000) {
     pill.classList.add('error');
     text.textContent = 'Sync error';
-    pill.title = syncStats.lastError + ` — ${syncStats.errors} errors total. Click to force refresh.`;
+    pill.title = syncStats.lastError + ` — ${syncStats.errors} errors total`;
     return;
   }
 
   if (sinceRead !== null && sinceRead < 5) {
     pill.classList.add('live');
     text.textContent = `Live · ${syncStats.reads}↓ ${syncStats.writes}↑`;
-    pill.title = `Cloud sync working. ${syncStats.reads} polls, ${syncStats.writes} writes. Last read ${sinceRead}s ago. Click to force refresh.`;
+    pill.title = `Cloud sync working. ${syncStats.reads} polls, ${syncStats.writes} writes. Last read ${sinceRead}s ago.`;
   } else {
     pill.classList.add('connecting');
     text.textContent = sinceRead === null ? 'Connecting…' : `Stale (${sinceRead}s)`;
-    pill.title = 'Cloud connection slow or stalled. Click to force refresh.';
+    pill.title = 'Cloud connection slow or stalled.';
   }
 }
 
 // Update the pill once a second so the "Stale (Ns)" counter ticks
 setInterval(updateRealtimeIndicator, 1000);
-
-// Click the pill to force a full refresh from cloud
-document.addEventListener('DOMContentLoaded', () => {
-  const pill = document.getElementById('syncPill');
-  if (!pill) return;
-  pill.addEventListener('click', async () => {
-    if (!supabaseReady) {
-      const ok = await initSupabase();
-      if (ok) subscribeToRealtimeUpdates();
-      updateRealtimeIndicator();
-      return;
-    }
-    // Force-clear the ms cursor so the next poll re-pulls everything
-    cloudLastMs.orders = 0;
-    cloudLastMs.checkins = 0;
-    cloudLastMs.users = 0;
-    cloudLastMs.assistance = 0;
-    try {
-      await syncUsersFromCloud();
-      await syncOrdersFromCloud();
-      await syncCheckinsFromCloud();
-      await syncLogoFromCloud();
-      renderSheet();
-      updateStats();
-      if (document.getElementById('page-calendar')?.classList.contains('active')) renderCalendar();
-      showToast('Forced refresh from cloud', 'info');
-    } catch (e) {
-      showToast('Refresh failed: ' + e.message, 'error');
-    }
-  });
-});
 
 function handleRemoteOrderChange(payload) {
   const { eventType, new: newRec, old: oldRec } = payload;
