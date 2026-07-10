@@ -3058,7 +3058,42 @@ const Cloud = {
 
 const HARDCODED_LOGO = "data:image/png;base64,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+fn5PncCYoyh1+sVrVu3bu12u1tNmzbtg7Fjx549depUSU5OTomPzwlJkjA6OvpgpdRWrUlOTtYcDgcoirJz6NChM2VZPqlXjPnsM5PJ5ImIiCirnELS16A53bt3H1eVOFzqEIfZbJavv/76sq1btwKcP9VYOBwOuPfee9f89NNPm0tKSrxnz56t6pkJAMDo6OgS+G/Zs6itITz55JOZc+bMufPQoUNXp6en50A1i5OMMRQXF9fiqquuOmpMEp07d35v8ODBb+bl5ZX624mKc84VRWGjRo06gIgVcL7cu17tRN9ODB977LEXjx8//sOZM2dQknyHKCRJgoqKCtGxY8f2NRb/xr42NDaBJP5wsMbSkJpUGjY0cnXPWG+IV0CrEhyr1SpVp41JSUma3W5nevomqHVkfRxBLoRAPdVam76t1v03NFW1W6/IxEswnniwvx1MHMqYvatrJ4mJibw+NiGpSzshCIIgCIIgCIIgCOKPA17GbRZNrN2iFt8n6rh9ogb3I+phrAkad0STFTf9DbLqRI/lYM5z+wPBqD/IA/ivtFYjr9oIjhG/UCgVFhYGxcXFftseHh4uioqKfvfZYPpBURShqmqd9avJZBJer9df38LFb8JJkiR8vdjDGANN06o91iq145Ju+17dfH5TOsK+qQiABADaXXfdNTstLW2iv80fEFGTJEm6+eabv3rnnXce13epaeh8LDObzfzll18e/MMPPzx09uzZvvn5+c2Li4t/s3WVfpQ6tGjRAiIjI92SJP04dOjQ1bNnz/7W4/H8rtrM2NDx0UcfferQoUOPu91uDyKa4uPjdy1btiypvLy8uvsZSgCgDR48eJmiKIkej8cTGhpqioyMnP3BBx98dPEGksYuMl999dUVb7311te5ubmAiFrr1q2lP/3pT/fdd999P1Q+hsr4/NNPPz1p165ds4yj3wKVxXLORbNmzQRj7FBMTMzHy5cvf09VVQb/fb+9wZ6jJEl85syZqz799NNBQgifG4AgoirLshwbG/u/n3766Tyjbxu7YclNSaiys7Pb//rrr92D+cCgQYPOSJIEl6B+nsmyzB988MFlr7766kPnzp2DYGdnSZJiDx48OHnWrFmPIeKbFxugUdzy888/R+3cubN7Je9BtlgsNZ55tm3b1gUALnxf165dIyr/3sXk5uaatm/f3t3Yei08PByu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";
 
-const REVIEWERS = ['Austin', 'Mikayla', 'Jason', 'Jordan', 'Kaity', 'Lea', 'Lulu', 'Martin'];
+// Reviewer list is DERIVED from userState.users — not a fixed constant — so
+// adding a team member from Manage Users instantly makes them selectable
+// in the sheet, and removing one takes them out. Excludes super admins
+// (they typically aren't graders), sorted alphabetically by first name.
+function getActiveReviewerNames() {
+  const names = userState.users
+    .filter(u => u.permission !== 'super')
+    .map(u => u.name.split(' ')[0]);
+  // Dedupe (in case two users share a first name — unlikely but safe)
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b));
+}
+
+// Builds <option> HTML for the reviewer dropdown on each sheet row.
+// Includes the currently-selected value even if that person is no longer
+// on the team, so historical rows don't lose their reviewer name.
+function getReviewerOptionsHtml(currentValue) {
+  const names = getActiveReviewerNames();
+  // Preserve legacy names still assigned to rows (e.g. an ex-teammate)
+  if (currentValue && !names.includes(currentValue)) names.push(currentValue);
+  return names.map(n =>
+    `<option value="${n}" ${currentValue === n ? 'selected' : ''}>${n}</option>`
+  ).join('');
+}
+
+// Legacy: some code paths reference REVIEWERS directly. Keep a getter so
+// they read the dynamic list without needing to be rewritten.
+const REVIEWERS = new Proxy([], {
+  get(target, prop) {
+    const arr = getActiveReviewerNames();
+    if (prop === 'length') return arr.length;
+    if (prop === Symbol.iterator) return arr[Symbol.iterator].bind(arr);
+    if (typeof prop === 'string' && /^\d+$/.test(prop)) return arr[Number(prop)];
+    if (typeof arr[prop] === 'function') return arr[prop].bind(arr);
+    return arr[prop];
+  },
+});
 
 const REVIEWER_COLORS = {
   'Austin':  '#3a6fb5',
@@ -4183,7 +4218,7 @@ function renderSheet() {
         <td class="reviewer-wrap">
           <select class="reviewer-select" data-field="reviewer" data-id="${r.id}">
             <option value="">—</option>
-            ${REVIEWERS.map(n => `<option value="${n}" ${r.reviewer === n ? 'selected' : ''}>${n}</option>`).join('')}
+            ${getReviewerOptionsHtml(r.reviewer)}
           </select>
         </td>
         <td>
@@ -4904,6 +4939,7 @@ document.querySelectorAll('[data-action]').forEach(el => {
       if (typeof pollTimer !== 'undefined' && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
       if (typeof checkinPollTimer !== 'undefined' && checkinPollTimer) { clearInterval(checkinPollTimer); checkinPollTimer = null; }
       if (typeof assistancePollTimer !== 'undefined' && assistancePollTimer) { clearInterval(assistancePollTimer); assistancePollTimer = null; }
+      if (typeof userPollTimer !== 'undefined' && userPollTimer) { clearInterval(userPollTimer); userPollTimer = null; }
       renderSigninSwitcher();
       renderUsers();
       if (typeof updateCheckInButton === 'function') updateCheckInButton();
@@ -5481,8 +5517,13 @@ document.getElementById('usersBody').addEventListener('click', (e) => {
     const id = parseInt(rm.dataset.removeUser);
     const u = userState.users.find(x => x.id === id);
     if (u && confirm(`Remove ${u.name} from the team?`)) {
+      // Tombstone the email so seedDefaultUsersToCloud won't re-add
+      // this user on the next refresh (they're one of the 9 defaults).
+      if (u.email) markUserDeleted(u.email);
       userState.users = userState.users.filter(x => x.id !== id);
       renderUsers();
+      renderPersonFilterOptions();  // update calendar person filter dropdown
+      renderSheet();                // update reviewer dropdowns on every row
       saveUsers();
       if (supabaseReady) Cloud.deleteUser(id).catch(() => {});
       showToast(`${u.name} removed`, 'error');
@@ -5642,6 +5683,7 @@ document.getElementById('userModalSave').addEventListener('click', () => {
 
   const me = getSignedInUser();
   const canChangePassword = me && me.permission === 'super';
+  let savedUser = null;
 
   if (editingUserId) {
     const u = userState.users.find(x => x.id === editingUserId);
@@ -5652,6 +5694,7 @@ document.getElementById('userModalSave').addEventListener('click', () => {
       u.permission = permission;
       u.avatarColor = modalDraft.avatarColor;
       u.photoData = modalDraft.photoData;
+      savedUser = u;
       // Save password if super admin entered a new one
       if (canChangePassword && newPassword) {
         setPasswordFor(u.id, newPassword);
@@ -5677,7 +5720,7 @@ document.getElementById('userModalSave').addEventListener('click', () => {
     }
   } else {
     const newId = nextUserId++;
-    userState.users.push({
+    savedUser = {
       id: newId,
       name,
       title: title || '—',
@@ -5686,13 +5729,24 @@ document.getElementById('userModalSave').addEventListener('click', () => {
       avatarColor: modalDraft.avatarColor,
       photoData: modalDraft.photoData,
       status: 'offline',
-    });
+    };
+    userState.users.push(savedUser);
+    // If this email was previously tombstoned (deleted user rejoining), un-tombstone
+    if (savedUser.email) unmarkUserDeleted(savedUser.email);
     // New users get the default firstname123 password — no need to set explicitly
     showToast(`${name} added · default password is ${defaultPasswordFor(name)}`);
   }
 
   renderUsers();
+  renderPersonFilterOptions();  // update calendar filter dropdown
+  renderSheet();                // update reviewer dropdowns on every row
   saveUsers();
+
+  // Push to cloud so other laptops see the change immediately
+  if (savedUser && supabaseReady) {
+    Cloud.upsertUser(savedUser).catch(e => console.warn('[UserSave] cloud:', e));
+  }
+
   closeUserModal();
 });
 
@@ -6169,10 +6223,45 @@ async function syncAssistanceFromCloud() {
   }
 }
 
+// Deleted-user tombstones. When someone is removed from Manage Users,
+// we record their email here so seedDefaultUsersToCloud() never re-adds them
+// on future refreshes. Persisted to localStorage AND cloud (via or_users with
+// a special "deleted" permission marker) so it works across laptops.
+const DELETED_USERS_KEY = 'orReview_deletedUsers_v1';
+function getDeletedUserEmails() {
+  try {
+    const raw = localStorage.getItem(DELETED_USERS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return new Set(arr.map(e => (e || '').toLowerCase()));
+    }
+  } catch (e) {}
+  return new Set();
+}
+function markUserDeleted(email) {
+  if (!email) return;
+  const set = getDeletedUserEmails();
+  set.add(email.toLowerCase());
+  try {
+    localStorage.setItem(DELETED_USERS_KEY, JSON.stringify([...set]));
+  } catch (e) {}
+}
+function unmarkUserDeleted(email) {
+  if (!email) return;
+  const set = getDeletedUserEmails();
+  set.delete(email.toLowerCase());
+  try {
+    localStorage.setItem(DELETED_USERS_KEY, JSON.stringify([...set]));
+  } catch (e) {}
+}
+
 async function seedDefaultUsersToCloud() {
+  const deleted = getDeletedUserEmails();
   // Upload photos and create user records for any DEFAULT_USERS not yet in cloud
   for (const def of DEFAULT_USERS) {
     const targetEmail = emailFromName(def.name).toLowerCase();
+    // Skip anyone who was explicitly deleted — respect the delete
+    if (deleted.has(targetEmail)) continue;
     const existing = userState.users.find(u => (u.email || '').toLowerCase() === targetEmail);
     if (existing) continue;
 
@@ -6213,12 +6302,42 @@ function subscribeToRealtimeUpdates() {
   // No more Supabase realtime channels — on Vercel + Neon we use polling.
   // Kicks off background polling for orders + check-ins + assistance every 1s
   // (with If-Modified-Since so the server returns 304s when nothing's changed).
-  console.log('[Sync] Starting 1s polling loops...');
+  console.log('[Sync] Starting polling loops...');
   startBackgroundPolling();
   startCheckinPolling();
   startAssistancePolling();
+  startUserPolling();
   realtimeStatus = 'polling';
   updateRealtimeIndicator();
+}
+
+// User polling every 15s — team roster changes (add/remove/rename) are rare
+// enough that 15s propagation is fine, and hammering the users endpoint every
+// 1s would be wasteful.
+let userPollTimer = null;
+function startUserPolling() {
+  if (userPollTimer) clearInterval(userPollTimer);
+  userPollTimer = setInterval(async () => {
+    if (!supabaseReady) return;
+    try {
+      const cloud = await Cloud.fetchUsers();
+      if (!cloud) return;  // 304 / unchanged
+      // Rebuild the local user list from cloud (source of truth), preserving
+      // the current sign-in id if possible so we don't kick the user out.
+      const currentSignedInName = userState.users.find(u => u.id === userState.signedInId)?.name;
+      userState.users = cloud.map(mapCloudUserToLocal);
+      nextUserId = Math.max(...userState.users.map(u => u.id), 0) + 1;
+      // Restore sign-in by name (id may have shifted)
+      if (currentSignedInName) {
+        const me = userState.users.find(u => u.name === currentSignedInName);
+        if (me) userState.signedInId = me.id;
+      }
+      renderUsers();
+      renderPersonFilterOptions();
+      renderSheet();  // reviewer dropdowns depend on user list
+      renderSigninSwitcher();
+    } catch (e) { /* silent */ }
+  }, 15000);
 }
 
 let pollTimer = null;
