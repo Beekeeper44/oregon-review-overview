@@ -2810,13 +2810,17 @@ const Cloud = {
     try {
       const r = await _get('/api/users', 'users');
       if (r.unchanged) return null;  // caller will keep current data
+      // Cloud tombstones → local tombstone set, so every laptop respects deletes
+      if (Array.isArray(r.deleted)) {
+        r.deleted.forEach(d => { if (d && d.email) markUserDeleted(d.email); });
+      }
       return r.rows || [];
     } catch (e) {
       console.warn('[Cloud] fetchUsers:', e.message);
       return null;
     }
   },
-  async upsertUser(user) {
+  async upsertUser(user, opts = {}) {
     if (!supabaseReady) return null;
     try {
       const payload = {
@@ -2829,6 +2833,8 @@ const Cloud = {
         avatar_color: user.avatarColor || 'stone',
         photo_data: user.photoData || null,
       };
+      if (opts.restore) payload.restore = true;
+      if (user.photoCleared) { payload.clear_photo = true; delete user.photoCleared; }
       await _post('/api/users', payload);
       return true;
     } catch (e) {
@@ -2836,10 +2842,10 @@ const Cloud = {
       return null;
     }
   },
-  async deleteUser(id) {
+  async deleteUser(id, email) {
     if (!supabaseReady) return false;
     try {
-      await _del('/api/users?id=' + encodeURIComponent(id));
+      await _del('/api/users?id=' + encodeURIComponent(id) + (email ? '&email=' + encodeURIComponent(email) : ''));
       return true;
     } catch (e) {
       console.warn('[Cloud] deleteUser:', e.message);
@@ -4850,7 +4856,7 @@ function updateBulkBar() {
 }
 
 document.querySelectorAll('[data-bulk]').forEach(btn => {
-  btn.addEventListener('click', () => {
+  btn.addEventListener('click', async () => {
     const action = btn.dataset.bulk;
     const count = state.selected.size;
     if (count === 0 && action !== 'clear') return;
@@ -4864,7 +4870,7 @@ document.querySelectorAll('[data-bulk]').forEach(btn => {
       state.rows.forEach(r => { if (state.selected.has(r.id)) r.released = false; });
       showToast(`${count} row${count === 1 ? '' : 's'} unreleased`);
     } else if (action === 'delete') {
-      if (!confirm(`Delete ${count} row${count === 1 ? '' : 's'}?`)) return;
+      if (!(await showConfirm('Delete rows?', `Delete ${count} row${count === 1 ? '' : 's'}?`, { confirmText: 'Delete' }))) return;
       // Capture cloud IDs before removing rows from local state
       const cloudIdsToDelete = state.rows
         .filter(r => state.selected.has(r.id))
@@ -4905,7 +4911,7 @@ document.getElementById('exportBtn').addEventListener('click', () => {
 });
 
 document.getElementById('clearAllBtn').addEventListener('click', async () => {
-  if (!confirm('Reset the sheet on all laptops? This will clear all rows and reload the demo data.')) return;
+  if (!(await showConfirm('Reset sheet?', 'Reset the sheet on all laptops? This will clear all rows and reload the demo data.', { confirmText: 'Reset' }))) return;
   if (supabaseReady) {
     await Cloud.deleteAllOrders();
   }
@@ -5379,22 +5385,80 @@ function emailFromName(name) {
   return name.toLowerCase().replace(/\s+/g, '.') + '@arenaclub.com';
 }
 
-async function saveUsers() {
+// Persist users. Local cache always; cloud only for the users passed in.
+// (Pushing everyone on every change let a laptop with a stale list overwrite
+// photos/edits someone else had just saved.)
+let lastLocalUserWriteAt = 0;
+async function saveUsers(changed) {
   try {
-    // Cloud first
-    if (supabaseReady) {
-      userState.users.forEach(u => {
-        Cloud.upsertUser(u).then(saved => {
-          if (saved && saved.id !== u.id) u.id = saved.id;
-        }).catch(() => {});
-      });
+    const list = changed ? (Array.isArray(changed) ? changed : [changed]) : [];
+    if (supabaseReady && list.length) {
+      lastLocalUserWriteAt = Date.now();
+      list.forEach(u => { Cloud.upsertUser(u).catch(() => {}); });
     }
-    // Local fallback
-    const payload = JSON.stringify({ users: userState.users, nextUserId });
     if (typeof localStorage !== 'undefined') {
-      try { localStorage.setItem(USERS_STORAGE_KEY, payload); } catch (e) {}
+      try {
+        localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify({ users: userState.users, nextUserId }));
+      } catch (e) {
+        // Quota hit — keep the list without photos rather than silently keeping nothing
+        try {
+          const slim = userState.users.map(u => ({ ...u, photoData: null }));
+          localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify({ users: slim, nextUserId }));
+        } catch (e2) {}
+      }
     }
   } catch (err) { /* silent */ }
+}
+
+/* ---------- Photo compression ----------
+   Every avatar is stored as a ~256px JPEG data URL (~15–30 KB). Full-size
+   uploads blew past Vercel's 4.5 MB response limit and broke user sync. */
+const PHOTO_MAX_PX = 256;
+const PHOTO_SHRINK_ABOVE = 60 * 1024;   // chars of data URL
+function shrinkPhoto(dataUrl, maxPx = PHOTO_MAX_PX) {
+  return new Promise((resolve) => {
+    if (!dataUrl) return resolve(dataUrl);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);   // flatten transparency for JPEG
+      ctx.drawImage(img, 0, 0, w, h);
+      let out = c.toDataURL('image/jpeg', 0.85);
+      if (out.length > PHOTO_SHRINK_ABOVE) out = c.toDataURL('image/jpeg', 0.7);
+      resolve(out);
+    };
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
+// Repair: shrink any oversized photo (old full-size uploads) and save it back
+async function repairOversizedPhotos() {
+  const fixed = [];
+  for (const u of userState.users) {
+    try {
+      let data = u.photoData;
+      if (!data && u.photoTooBig && supabaseReady) {
+        const r = await fetch('/api/users?photo=' + encodeURIComponent(u.id), { cache: 'no-store' });
+        if (r.ok) data = (await r.json()).photo_data;
+      }
+      if (data && data.length > PHOTO_SHRINK_ABOVE) {
+        const small = await shrinkPhoto(data);
+        if (small) { u.photoData = small; u.photoTooBig = false; fixed.push(u); }
+      }
+    } catch (e) { console.warn('[Photos] repair failed for', u.name, e); }
+  }
+  if (fixed.length) {
+    console.log('[Photos] shrank', fixed.map(u => u.name).join(', '));
+    saveUsers(fixed);
+    renderUsers();
+    if (typeof renderSigninSwitcher === 'function') renderSigninSwitcher();
+  }
 }
 
 async function loadUsers() {
@@ -5419,7 +5483,9 @@ async function loadUsers() {
 }
 
 function seedUsers() {
+  const deleted = getDeletedUserEmails();
   DEFAULT_USERS.forEach(u => {
+    if (deleted.has(emailFromName(u.name).toLowerCase())) return;
     userState.users.push({
       id: nextUserId++,
       email: emailFromName(u.name),
@@ -5474,7 +5540,7 @@ function renderUsers() {
           <td>
             <div class="row-actions" style="padding: 0; text-align: left;">
               <button class="icon-btn" data-edit-user="${u.id}" title="Edit user">✎</button>
-              <button class="icon-btn danger" data-remove-user="${u.id}" title="Remove user">🗑</button>
+              <button class="icon-btn danger" data-remove-user="${u.id}" data-remove-email="${u.email || ''}" data-remove-name="${u.name}" title="Remove user">🗑</button>
             </div>
           </td>
         </tr>
@@ -5504,30 +5570,39 @@ document.getElementById('usersBody').addEventListener('change', (e) => {
   if (u) {
     u.permission = sel.value;
     renderUsers();
-    saveUsers();
+    saveUsers(u);
     showToast(`${u.name} is now ${PERMISSION_LEVELS[u.permission].label}`);
   }
 });
 
 // Remove / edit user
-document.getElementById('usersBody').addEventListener('click', (e) => {
+document.getElementById('usersBody').addEventListener('click', async (e) => {
   const rm = e.target.closest('[data-remove-user]');
   const ed = e.target.closest('[data-edit-user]');
   if (rm) {
+    // Find by id, then email, then name — ids can drift after a cloud resync
     const id = parseInt(rm.dataset.removeUser);
-    const u = userState.users.find(x => x.id === id);
-    if (u && confirm(`Remove ${u.name} from the team?`)) {
-      // Tombstone the email so seedDefaultUsersToCloud won't re-add
-      // this user on the next refresh (they're one of the 9 defaults).
-      if (u.email) markUserDeleted(u.email);
-      userState.users = userState.users.filter(x => x.id !== id);
-      renderUsers();
-      renderPersonFilterOptions();  // update calendar person filter dropdown
-      renderSheet();                // update reviewer dropdowns on every row
-      saveUsers();
-      if (supabaseReady) Cloud.deleteUser(id).catch(() => {});
-      showToast(`${u.name} removed`, 'error');
+    const em = (rm.dataset.removeEmail || '').toLowerCase();
+    const nm = rm.dataset.removeName || '';
+    const u = userState.users.find(x => x.id === id)
+           || (em && userState.users.find(x => (x.email || '').toLowerCase() === em))
+           || userState.users.find(x => x.name === nm);
+    if (!u) { showToast('Could not find that user — refresh and try again', 'error'); return; }
+    if (u.id === userState.signedInId) {
+      showToast("You can't remove yourself", 'error');
+      return;
     }
+    const ok = await showConfirm('Remove team member?', `Remove ${u.name} from the team? They won't be able to sign in.`, { confirmText: 'Remove' });
+    if (!ok) return;
+    // Tombstone the email so seedDefaultUsersToCloud won't re-add them
+    if (u.email) markUserDeleted(u.email);
+    userState.users = userState.users.filter(x => x !== u);
+    renderUsers();
+    renderPersonFilterOptions();  // update calendar person filter dropdown
+    renderSheet();                // update reviewer dropdowns on every row
+    saveUsers();
+    if (supabaseReady) Cloud.deleteUser(u.id, u.email).catch(() => {});
+    showToast(`${u.name} removed`, 'error');
   } else if (ed) {
     const id = parseInt(ed.dataset.editUser);
     openUserModal(id);
@@ -5642,15 +5717,17 @@ document.getElementById('avatarFileInput').addEventListener('change', (e) => {
     showToast('Please choose an image file', 'error');
     return;
   }
-  // Limit to ~2MB to avoid huge storage payloads
-  if (file.size > 2 * 1024 * 1024) {
-    showToast('Image too large (max 2MB)', 'error');
+  if (file.size > 25 * 1024 * 1024) {
+    showToast('Image too large (max 25MB)', 'error');
     e.target.value = '';
     return;
   }
   const reader = new FileReader();
-  reader.onload = (ev) => {
-    modalDraft.photoData = ev.target.result;
+  reader.onload = async (ev) => {
+    // Compress to a small avatar so it syncs and persists reliably
+    const small = await shrinkPhoto(ev.target.result);
+    if (!small) { showToast("Couldn't read that image", 'error'); return; }
+    modalDraft.photoData = small;
     updateAvatarPreview();
     updateColorSwatchSelection();
   };
@@ -5693,6 +5770,7 @@ document.getElementById('userModalSave').addEventListener('click', () => {
       u.email = email || emailFromName(name);
       u.permission = permission;
       u.avatarColor = modalDraft.avatarColor;
+      if (u.photoData && !modalDraft.photoData) u.photoCleared = true;  // explicit "Remove photo"
       u.photoData = modalDraft.photoData;
       savedUser = u;
       // Save password if super admin entered a new one
@@ -5719,6 +5797,13 @@ document.getElementById('userModalSave').addEventListener('click', () => {
       }
     }
   } else {
+    // Sign-in is by first name, so first names must be unique
+    const first = name.split(' ')[0].toLowerCase();
+    if (userState.users.some(x => x.name.split(' ')[0].toLowerCase() === first)) {
+      showToast(`Someone named ${name.split(' ')[0]} already exists — sign-in uses first names`, 'error');
+      return;
+    }
+    nextUserId = Math.max(nextUserId, ...userState.users.map(x => x.id + 1), 1);
     const newId = nextUserId++;
     savedUser = {
       id: newId,
@@ -5744,7 +5829,10 @@ document.getElementById('userModalSave').addEventListener('click', () => {
 
   // Push to cloud so other laptops see the change immediately
   if (savedUser && supabaseReady) {
-    Cloud.upsertUser(savedUser).catch(e => console.warn('[UserSave] cloud:', e));
+    lastLocalUserWriteAt = Date.now();
+    Cloud.upsertUser(savedUser, { restore: !editingUserId })
+      .then(ok => { if (!ok) showToast(`Couldn't save ${savedUser.name} to the database — check connection`, 'error'); })
+      .catch(e => console.warn('[UserSave] cloud:', e));
   }
 
   closeUserModal();
@@ -5806,8 +5894,9 @@ document.getElementById('inviteUserBtn').addEventListener('click', () => {
     'Martin Williams': HARDCODED_PHOTOS.martin,
   };
   let migrated = false;
+  const photoFilled = [];
   userState.users.forEach(u => {
-    if (!u.photoData && photoMap[u.name]) { u.photoData = photoMap[u.name]; migrated = true; }
+    if (!u.photoData && !u.photoTooBig && photoMap[u.name]) { u.photoData = photoMap[u.name]; migrated = true; photoFilled.push(u); }
   });
   if (!userState.users.some(u => u.name === 'Alan Bailey')) {
     userState.users.unshift({
@@ -5818,9 +5907,12 @@ document.getElementById('inviteUserBtn').addEventListener('click', () => {
     migrated = true;
   }
   if (migrated) {
-    saveUsers();
+    saveUsers(photoFilled);
     if (supabaseReady) seedDefaultUsersToCloud().catch(() => {});
   }
+
+  // Shrink any legacy full-size photos and save them back (one-time self-heal)
+  repairOversizedPhotos().catch(() => {});
 
   // 2. Pull initial data
   if (supabaseReady) {
@@ -5923,7 +6015,7 @@ function authenticate(username, password) {
   // Fallback: if user not in loaded list but matches a default user, restore them
   if (!candidate) {
     const def = DEFAULT_USERS.find(u => u.name.split(' ')[0].toLowerCase() === trimmedUser);
-    if (def) {
+    if (def && !getDeletedUserEmails().has(emailFromName(def.name).toLowerCase())) {
       console.log('[Auth] restoring default user:', def.name);
       candidate = {
         id: nextUserId++,
@@ -5931,7 +6023,7 @@ function authenticate(username, password) {
         email: emailFromName(def.name),
       };
       userState.users.push(candidate);
-      saveUsers();
+      saveUsers(candidate);
     }
   }
 
@@ -5940,7 +6032,6 @@ function authenticate(username, password) {
     return { ok: false, reason: 'no_user', user: trimmedUser };
   }
   const expected = getPasswordFor(candidate);
-  console.log('[Auth] expected pwd:', expected, 'got:', trimmedPwd);
   if (trimmedPwd === expected) return { ok: true, user: candidate };
   return { ok: false, reason: 'wrong_password', user: candidate.name };
 }
@@ -6088,7 +6179,8 @@ function mapCloudUserToLocal(u) {
     title: u.title || '—',
     permission: u.permission || 'basic',
     avatarColor: u.avatar_color || 'stone',
-    photoData: u.photo_url || null, // photo_url is the public URL from Storage
+    photoData: u.photo_data || u.photo_url || null,
+    photoTooBig: !!u.photo_too_big,
     status: 'offline',
   };
 }
@@ -6320,6 +6412,8 @@ function startUserPolling() {
   userPollTimer = setInterval(async () => {
     if (!supabaseReady) return;
     try {
+      // Don't clobber a save that may still be in flight
+      if (Date.now() - lastLocalUserWriteAt < 8000) return;
       const cloud = await Cloud.fetchUsers();
       if (!cloud) return;  // 304 / unchanged
       // Rebuild the local user list from cloud (source of truth), preserving
@@ -6336,6 +6430,9 @@ function startUserPolling() {
       renderPersonFilterOptions();
       renderSheet();  // reviewer dropdowns depend on user list
       renderSigninSwitcher();
+      if (userState.users.some(u => u.photoTooBig || (u.photoData && u.photoData.length > PHOTO_SHRINK_ABOVE))) {
+        repairOversizedPhotos();
+      }
     } catch (e) { /* silent */ }
   }, 15000);
 }
@@ -6704,7 +6801,7 @@ function relativeTime(iso) {
 // Password reset requests now only originate from super admins inside the app.
 
 // Handle Reset Password / Dismiss clicks in the reset requests panel
-document.addEventListener('click', (e) => {
+document.addEventListener('click', async (e) => {
   const action = e.target.closest('[data-reset-action]');
   if (!action) return;
   const reqId = parseInt(action.dataset.reqId);
@@ -6723,7 +6820,7 @@ document.addEventListener('click', (e) => {
       val.textContent = newPwd;
     }, 100);
   } else if (action.dataset.resetAction === 'dismiss') {
-    if (confirm('Dismiss this reset request without changing the password?')) {
+    if (await showConfirm('Dismiss request?', 'Dismiss this reset request without changing the password?', { confirmText: 'Dismiss' })) {
       dismissResetRequest(reqId);
       renderResetRequestsPanel();
       updateResetBadge();
